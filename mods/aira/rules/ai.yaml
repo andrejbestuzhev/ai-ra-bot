@@ -1,0 +1,91 @@
+## AI Strategist bot definition
+## This file is loaded AFTER ra|rules/ai.yaml, so it adds to the Player actor.
+## Standard RA bots (rush, normal, turtle, naval) remain available.
+
+Player:
+	## AI Strategist bot type
+	ModularBot@AIStrategist:
+		Name: bot-ai-strategist.name
+		Type: ai-strategist
+
+	GrantConditionOnBotOwner@ai-strategist:
+		Condition: enable-ai-strategist
+		Bots: ai-strategist
+
+	## AI strategist module — full control over building, production, movement
+	AIStrategistModule:
+		RequiresCondition: enable-ai-strategist
+		DecisionIntervalTicks: 375
+		ApiModel: claude-haiku-4-5-20251001
+		MaxTokens: 1024
+		EnableApi: true
+
+	## Harvesters drive themselves
+	HarvesterBotModule@ai:
+		RequiresCondition: enable-ai-strategist
+		HarvesterTypes: harv
+		RefineryTypes: proc
+
+	## Auto-repair damaged buildings
+	BuildingRepairBotModule@ai:
+		RequiresCondition: enable-ai-strategist
+
+	## MCV auto-deploy
+	McvManagerBotModule@ai:
+		RequiresCondition: enable-ai-strategist
+		McvTypes: mcv
+		ConstructionYardTypes: fact
+		McvFactoryTypes: weap
+
+	## Support powers (spy planes, nukes, paratroopers)
+	SupportPowerBotModule@ai:
+		RequiresCondition: enable-ai-strategist
+		Decisions:
+			spyplane:
+				OrderName: SovietSpyPlane
+				MinimumAttractiveness: 1
+				Consideration@1:
+					Against: Enemy
+					Types: Structure
+					Attractiveness: 1
+					TargetMetric: None
+					CheckRadius: 5c0
+			paratroopers:
+				OrderName: SovietParatroopers
+				MinimumAttractiveness: 5
+				Consideration@1:
+					Against: Enemy
+					Types: Structure
+					Attractiveness: 1
+					TargetMetric: None
+					CheckRadius: 8c0
+				Consideration@2:
+					Against: Enemy
+					Types: Water
+					Attractiveness: -5
+					TargetMetric: None
+					CheckRadius: 8c0
+			parabombs:
+				OrderName: UkraineParabombs
+				MinimumAttractiveness: 1
+				Consideration@1:
+					Against: Enemy
+					Types: Structure
+					Attractiveness: 1
+					TargetMetric: None
+					CheckRadius: 5c0
+			nukepower:
+				OrderName: NukePowerInfoOrder
+				MinimumAttractiveness: 3000
+				Consideration@1:
+					Against: Enemy
+					Types: Structure
+					Attractiveness: 1
+					TargetMetric: Value
+					CheckRadius: 5c0
+				Consideration@2:
+					Against: Ally
+					Types: Air, Ground, Water
+					Attractiveness: -10
+					TargetMetric: Value
+					CheckRadius: 7c0

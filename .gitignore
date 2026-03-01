@@ -1,5 +1,6 @@
 user.config
 engine
+.claude/
 
 # Visual Studio
 Release

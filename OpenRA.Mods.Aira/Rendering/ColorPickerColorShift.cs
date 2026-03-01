@@ -10,16 +10,17 @@
 #endregion
 
 using OpenRA.Graphics;
+using OpenRA.Mods.Common.Traits;
 using OpenRA.Primitives;
 using OpenRA.Traits;
 
-namespace OpenRA.Mods.Example.Rendering
+namespace OpenRA.Mods.Aira.Rendering
 {
 	[TraitLocation(SystemActors.World | SystemActors.EditorWorld)]
-	[Desc("Add color shifts to player palettes. Use to add RGBA compatibility to PlayerColorPalette.")]
-	public class PlayerColorShiftInfo : TraitInfo
+	[Desc("Create a color picker palette from another palette.")]
+	public class ColorPickerColorShiftInfo : TraitInfo
 	{
-		[PaletteReference(true)]
+		[PaletteReference]
 		[FieldLoader.Require]
 		[Desc("The name of the palette to base off.")]
 		public readonly string BasePalette = "";
@@ -39,25 +40,51 @@ namespace OpenRA.Mods.Example.Rendering
 		[Desc("Value reference for the color shift.")]
 		public readonly float ReferenceValue = 0.95f;
 
-		public override object Create(ActorInitializer init) { return new PlayerColorShift(this); }
+		public override object Create(ActorInitializer init) { return new ColorPickerColorShift(this); }
 	}
 
-	public class PlayerColorShift : ILoadsPlayerPalettes
+	public class ColorPickerColorShift : ILoadsPalettes, ITickRender
 	{
-		readonly PlayerColorShiftInfo info;
+		readonly ColorPickerColorShiftInfo info;
+		Color color;
+		Color preferredColor;
 
-		public PlayerColorShift(PlayerColorShiftInfo info)
+		public ColorPickerColorShift(ColorPickerColorShiftInfo info)
 		{
+			// All users need to use the same TraitInfo instance, chosen as the default mod rules
+			var colorManager = Game.ModData.DefaultRules.Actors[SystemActors.World].TraitInfo<IColorPickerManagerInfo>();
+			colorManager.OnColorPickerColorUpdate += c => preferredColor = c;
+			preferredColor = Game.Settings.Player.Color;
+
 			this.info = info;
 		}
 
-		void ILoadsPlayerPalettes.LoadPlayerPalettes(WorldRenderer worldRenderer, string playerName, Color color, bool replaceExisting)
+		void ILoadsPalettes.LoadPalettes(WorldRenderer worldRenderer)
 		{
+			color = preferredColor;
 			var (r, g, b) = color.ToLinear();
 			var (hue, saturation, value) = Color.RgbToHsv(r, g, b);
 
 			worldRenderer.SetPaletteColorShift(
-				info.BasePalette + playerName,
+				info.BasePalette,
+				hue - info.ReferenceHue,
+				saturation - info.ReferenceSaturation,
+				value / info.ReferenceValue,
+				info.MinHue,
+				info.MaxHue);
+		}
+
+		void ITickRender.TickRender(WorldRenderer worldRenderer, Actor self)
+		{
+			if (color == preferredColor)
+				return;
+
+			color = preferredColor;
+			var (r, g, b) = color.ToLinear();
+			var (hue, saturation, value) = Color.RgbToHsv(r, g, b);
+
+			worldRenderer.SetPaletteColorShift(
+				info.BasePalette,
 				hue - info.ReferenceHue,
 				saturation - info.ReferenceSaturation,
 				value / info.ReferenceValue,

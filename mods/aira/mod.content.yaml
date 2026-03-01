@@ -1,0 +1,55 @@
+Rules:
+	ra|rules/misc.yaml
+	ra|rules/ai.yaml
+	ra|rules/player.yaml
+	ra|rules/palettes.yaml
+	ra|rules/world.yaml
+	ra|rules/defaults.yaml
+	ra|rules/vehicles.yaml
+	ra|rules/husks.yaml
+	ra|rules/structures.yaml
+	ra|rules/infantry.yaml
+	ra|rules/civilian.yaml
+	ra|rules/decoration.yaml
+	ra|rules/aircraft.yaml
+	ra|rules/ships.yaml
+	ra|rules/fakes.yaml
+	aira|rules/ai.yaml
+
+Sequences:
+	ra|sequences/ships.yaml
+	ra|sequences/vehicles.yaml
+	ra|sequences/structures.yaml
+	ra|sequences/infantry.yaml
+	ra|sequences/aircraft.yaml
+	ra|sequences/misc.yaml
+	ra|sequences/decorations.yaml
+
+TileSets:
+	ra|tilesets/snow.yaml
+	ra|tilesets/interior.yaml
+	ra|tilesets/temperat.yaml
+	ra|tilesets/desert.yaml
+
+Cursors:
+	ra|cursors.yaml
+
+Missions:
+	ra|missions.yaml
+
+Music:
+	ra|audio/music.yaml
+
+Notifications:
+	ra|audio/notifications.yaml
+
+Voices:
+	ra|audio/voices.yaml
+
+Weapons:
+	ra|weapons/explosions.yaml
+	ra|weapons/ballistics.yaml
+	ra|weapons/missiles.yaml
+	ra|weapons/other.yaml
+	ra|weapons/smallcaliber.yaml
+	ra|weapons/superweapons.yaml
