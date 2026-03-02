@@ -62,6 +62,7 @@ namespace OpenRA.Mods.Aira.Traits
 		readonly Player player;
 
 		PlayerResources playerResources;
+		PowerManager powerManager;
 		int ticksSinceLastDecision;
 		bool isFirstTick = true;
 
@@ -76,7 +77,7 @@ namespace OpenRA.Mods.Aira.Traits
 		// Building construction queue (populated by AI decisions)
 		readonly Queue<string> buildQueue = new();
 		int placementRetries;
-		readonly HashSet<uint> pendingPlacements = new();
+		readonly HashSet<string> pendingPlacements = new();
 
 		// Unit production orders (populated by AI decisions)
 		readonly List<ProduceOrder> produceOrders = new();
@@ -94,6 +95,7 @@ namespace OpenRA.Mods.Aira.Traits
 
 		// Turn counter (not affected by history trimming)
 		int totalTurns;
+		bool logProductionDiagNextTick;
 
 		// File logging
 		string logFilePath;
@@ -155,6 +157,7 @@ namespace OpenRA.Mods.Aira.Traits
 		void IBotEnabled.BotEnabled(IBot bot)
 		{
 			playerResources = player.PlayerActor.Trait<PlayerResources>();
+			powerManager = player.PlayerActor.TraitOrDefault<PowerManager>();
 
 			// Init log file — only here, because BotEnabled is only called for actual bots
 			try
@@ -239,18 +242,19 @@ namespace OpenRA.Mods.Aira.Traits
 
 			foreach (var queue in queues["Building"].Concat(queues["Defense"]))
 			{
-				var queueId = queue.Actor.ActorID;
+				var queueActorId = queue.Actor.ActorID;
+				var pendingKey = $"{queueActorId}:{queue.Info.Type}";
 				var current = queue.CurrentItem();
 
 				if (current == null || !current.Done)
 				{
 					// Item gone or not done — clear pending flag
-					pendingPlacements.Remove(queueId);
+					pendingPlacements.Remove(pendingKey);
 					continue;
 				}
 
 				// Already sent placement order — wait for engine to process it
-				if (pendingPlacements.Contains(queueId))
+				if (pendingPlacements.Contains(pendingKey))
 					continue;
 
 				var location = FindBuildingPlacement(current.Item);
@@ -264,11 +268,11 @@ namespace OpenRA.Mods.Aira.Traits
 					{
 						TargetString = current.Item,
 						ExtraLocation = CPos.Zero,
-						ExtraData = queueId,
+						ExtraData = queueActorId,
 						SuppressVisualFeedback = true
 					});
 
-					pendingPlacements.Add(queueId);
+					pendingPlacements.Add(pendingKey);
 					placementRetries = 0;
 				}
 				else
@@ -376,6 +380,31 @@ namespace OpenRA.Mods.Aira.Traits
 				return;
 
 			var queues = AIUtils.FindQueuesByCategory(player);
+
+			// One-time diagnostic after each decision
+			if (logProductionDiagNextTick)
+			{
+				logProductionDiagNextTick = false;
+				var orderNames = string.Join(", ", produceOrders.Select(o => $"{o.Count}x {o.Unit}"));
+				Log("[AI] ProdDiag: orders=[{0}]", orderNames);
+				foreach (var category in new[] { "Infantry", "Vehicle", "Aircraft", "Ship" })
+				{
+					var catQueues = queues[category].ToList();
+					if (catQueues.Count == 0)
+					{
+						Log("[AI] ProdDiag: {0}: no queues", category);
+						continue;
+					}
+
+					foreach (var q in catQueues)
+					{
+						var busy = q.AllQueued().Any();
+						var items = q.BuildableItems().Select(b => b.Name).ToArray();
+						Log("[AI] ProdDiag: {0}: busy={1}, buildable=[{2}]",
+							category, busy, string.Join(",", items.Take(15)));
+					}
+				}
+			}
 
 			foreach (var category in new[] { "Infantry", "Vehicle", "Aircraft", "Ship" })
 			{
@@ -507,8 +536,12 @@ namespace OpenRA.Mods.Aira.Traits
 			var report = FormatGameStateReport(snapshot);
 
 			Log("[AI] === State ===");
-			Log("[AI] ${0} | {1} bld | {2} units | {3} enemies | attacks: {4}",
-				snapshot.Money, snapshot.Buildings.Count, snapshot.Units.Count,
+			var pwrExcess = snapshot.PowerProvided - snapshot.PowerDrained;
+			Log("[AI] ${0} | P:{1}/{2}({3}{4}) | {5} bld | {6} units | {7} enemies | attacks: {8}",
+				snapshot.Money,
+				snapshot.PowerProvided, snapshot.PowerDrained,
+				pwrExcess >= 0 ? "+" : "", pwrExcess,
+				snapshot.Buildings.Count, snapshot.Units.Count,
 				snapshot.VisibleEnemies.Count, recentAttacks.Count);
 
 			if (Info.EnableApi && !string.IsNullOrEmpty(apiKey))
@@ -576,8 +609,11 @@ namespace OpenRA.Mods.Aira.Traits
 				produceOrders.AddRange(decision.Produce);
 
 				if (decision.Produce.Count > 0)
+				{
 					Log("[AI] Produce: {0}",
 						string.Join(", ", decision.Produce.Select(p => $"{p.Count}x {p.Unit}")));
+					logProductionDiagNextTick = true;
+				}
 
 				// Execute movement orders immediately
 				if (decision.Orders.Count > 0)
@@ -611,7 +647,10 @@ namespace OpenRA.Mods.Aira.Traits
 			var snapshot = new GameStateSnapshot
 			{
 				GameTimeTicks = world.WorldTick,
-				Money = playerResources.GetCashAndResources()
+				Money = playerResources.GetCashAndResources(),
+				PowerProvided = powerManager?.PowerProvided ?? 0,
+				PowerDrained = powerManager?.PowerDrained ?? 0,
+				Faction = player.Faction.InternalName
 			};
 
 			foreach (var building in world.ActorsHavingTrait<Building>())
@@ -701,7 +740,13 @@ namespace OpenRA.Mods.Aira.Traits
 			var seconds = snapshot.GameTimeTicks % 1500 / 25;
 
 			sb.AppendLine($"TIME: {minutes}:{seconds:D2}");
+			sb.AppendLine($"FACTION: {snapshot.Faction}");
 			sb.AppendLine($"MONEY: {snapshot.Money} (income ~{estimatedIncomePerMin}/min)");
+
+			var excess = snapshot.PowerProvided - snapshot.PowerDrained;
+			sb.AppendLine($"POWER: {snapshot.PowerProvided} provided / {snapshot.PowerDrained} drained (surplus: {excess})");
+			if (excess < 0)
+				sb.AppendLine("⚠ LOW POWER! Production is 3x SLOWER. Build powr or apwr IMMEDIATELY!");
 
 			var baseCenter = GetBaseCenter();
 			if (baseCenter.HasValue)
@@ -795,43 +840,138 @@ namespace OpenRA.Mods.Aira.Traits
 
 		static string BuildSystemPrompt()
 		{
-			return @"You are a Red Alert RTS commander with FULL CONTROL over building, production, and army movement.
-This is a CONVERSATION — you remember all previous game states and your decisions. Learn from what worked and what failed.
+			return @"You command a Red Alert base. FULL CONTROL: buildings, units, army orders. This is a multi-turn conversation — you remember everything. Adapt every turn.
 
-Respond with ONLY valid JSON. No markdown fences, no text outside JSON.
+RESPOND WITH ONLY VALID JSON. No markdown, no text outside JSON.
 
-FORMAT:
 {
-  ""analysis"": ""1-2 sentence assessment referencing what changed since last turn"",
+  ""analysis"": ""1-2 sentences: what changed, what's the threat, what's the plan"",
   ""build"": [""building1"", ""building2""],
   ""produce"": [{""unit"": ""name"", ""count"": N}],
-  ""orders"": [{""types"": [""unit_type""], ""action"": ""attack"", ""x"": N, ""y"": N}]
+  ""orders"": [{""types"": [""unit_type""], ""action"": ""attack_move"", ""x"": N, ""y"": N}]
 }
 
-FIELDS:
-- build: Buildings to construct IN ORDER. Names from BUILDABLE list. Replaces previous queue.
-- produce: Units to train. Replaces previous orders.
-- orders: Movement commands. ""types""=unit names to select (empty=all idle combat). ""action""=""attack"" or ""move"". x,y=map coordinates.
+RULES:
+- build: queue buildings IN ORDER. Only use names from BUILDABLE list! Replaces previous queue.
+- produce: queue units. CRITICAL: ONLY produce units that appear in BUILDABLE list! If a unit is NOT in BUILDABLE, you CANNOT build it.
+- orders: ""types""=unit names to select (empty=all idle combat units). ""action""=""attack_move"" or ""move"". x,y=map cell coordinates.
+- You can issue MULTIPLE orders per turn to different unit groups (e.g. scouts go one way, main army another).
+- ALWAYS CHECK the BUILDABLE list before ordering units. If tanks (1tnk/2tnk/3tnk) are NOT listed, you need to build FIX (repair facility) first!
 
-BUILD ORDER:
-powr(power) → proc(refinery,$income) → barr/tent(infantry) → weap(war factory) → dome(radar) → tech
-apwr=advanced power. Each proc gives free harvester. Keep power positive.
-Defenses: pbox, gun, ftur, tsla, agun, sam
+═══ POWER ═══
+Game state shows POWER: provided/drained/surplus. You MUST keep surplus >= 0.
+Low power = ALL production 3x slower (buildings AND units). This is devastating.
+Build powr ($300, +100 power) early. Build apwr ($500, +200 power) when available.
+Rule of thumb: 1 powr sustains 2-3 buildings. After 4+ buildings you need apwr.
+If surplus goes negative: STOP all other construction, build powr/apwr FIRST.
 
-UNITS:
-Infantry(barr/tent): e1(rifle) e2(grenadier) e3(rocket) e4(flame) dog(scout) shok(shock trooper)
-Vehicle(weap): 1tnk(light) 2tnk(medium) 3tnk(heavy) 4tnk(mammoth) v2rl(rocket) arty(artillery) apc ftrk(flak) stnk(stealth)
-Air(hpad/afld): heli hind mh60 mig yak
-Navy(spen/syrd): ss msub dd ca pt
+═══ ECONOMY ═══
+Buildings: powr=$300(+100pw), apwr=$500(+200pw), proc=$1400(+free harvester,-40pw), barr=$300(-20pw), tent=$300(-20pw), weap=$2000(-30pw), dome=$1000(-40pw), fix=$1200(-30pw), tech=$1500(-60pw)
+Each harvester trip ≈ $700. Two proc = two harvesters = stable income.
+CRITICAL: Never let money sit idle. Always be building something OR producing units.
+If money > $3000 and you have weap: spam tanks. If money piles up: build 2nd weap or 2nd barr.
 
-STRATEGY:
-- Early: powr → proc → barr → weap → dome, then expand production
-- Tanks beat infantry. Build mostly 2tnk/3tnk.
-- Attack enemy harvesters(harv) and refineries(proc) to cripple economy
-- Scout with dogs before committing army
-- If UNDER ATTACK warning: immediately build defenses, pull units back to defend
-- LEARN: if you sent units and lost them, try a different approach next time
-- Don't repeat failed strategies — adapt!";
+═══ BUILD ORDER ═══
+1. powr ($300) — enables construction, provides +100 power
+2. proc ($1400) — refinery + free harvester = income
+3. barr ($300) — infantry for early defense/scouting
+4. powr ($300) — second power plant BEFORE weap (you'll need it)
+5. weap ($2000) — war factory (but tanks need FIX first!)
+6. fix ($1200) — REPAIR FACILITY. CRITICAL: unlocks TANKS. Without fix, weap only builds harv/apc/ftrk!
+7. proc ($1400) — second refinery = double income
+8. apwr ($500) — advanced power, you need it before dome
+9. dome ($1000) — radar
+After dome: check power surplus! If < 50 build apwr. Then tech for advanced units, or 2nd weap.
+ALWAYS CHECK POWER before building anything. Each building drains power.
+NOTE: If tanks don't appear in BUILDABLE after building weap, you MUST build fix first!
+
+═══ UNITS — COSTS AND ROLES ═══
+INFANTRY (barr/tent) — cheap, slow, fragile:
+  e1=$100(rifle, filler) e2=$160(grenadier, vs buildings) e3=$300(rocket, vs tanks/air)
+  e4=$200(flamethrower) shok=$1200(shock trooper, devastating vs everything, requires tech)
+DOG (kenn — kennel building required, $200):
+  dog=$200(fastest scout, kills infantry 1-shot, CANNOT attack vehicles)
+  NOTE: Dogs need a KENNEL (kenn), not barracks. Build kenn if you want dogs.
+
+VEHICLES (weap) — your MAIN fighting force:
+  WITHOUT fix: harv=$1400, apc=$600(transport), ftrk=$480(flak truck, anti-air)
+  WITH fix: TANKS UNLOCKED! Check BUILDABLE list — your faction determines which tanks:
+  Allied tanks: 1tnk=$700(light, fast, no fix needed) 2tnk=$800(medium, BEST VALUE, needs fix)
+  Soviet tanks: 3tnk=$1150(heavy, tough, needs fix) 4tnk=$1700(mammoth, needs tech)
+  Other: v2rl=$700(V2 rocket, needs dome, Soviet) arty=$600(artillery, needs dome, Allied)
+  BUILD FIX ASAP after weap! Without it you have NO TANKS and will lose.
+
+AIR (hpad/afld): heli=$1200 hind=$1300 mig=$1600 yak=$800
+NAVY (spen/syrd): ss=$950 dd=$1000 ca=$2000
+
+═══ COUNTER SYSTEM ═══
+- Tanks crush infantry (always prefer tanks over infantry for combat)
+- e3 rocket soldiers counter tanks (but die to other infantry)
+- Dogs instantly kill any infantry (but can't attack vehicles at all)
+- 4tnk mammoth has built-in AA missiles
+- ftrk/agun counter air units
+- arty/v2rl outrange base defenses
+
+═══ DEFENSE ═══
+gun=$600(turret, vs vehicles) pbox=$300(pillbox, vs infantry) ftur=$600(flame turret)
+tsla=$1500(tesla coil, powerful) sam=$750(anti-air) agun=$600(anti-air gun)
+RULE: Build 1-2 defenses near proc/harvesters BEFORE you have enough tanks to defend.
+A single gun turret early can save your base from a rush.
+
+═══ STRATEGY ═══
+
+EARLY GAME (0:00-3:00):
+- Follow build order strictly. NEVER skip proc.
+- After barr: train 1-2 e1 ($100 each) for scouting. Send them to DIFFERENT map quadrants.
+- If you have kenn (kennel): dogs are faster scouts. But dogs cost $200 and need a separate building.
+- DO NOT send infantry to attack. They are too slow and weak. Save money for weap.
+- WATCH YOUR POWER. If power surplus < 0, build powr/apwr before anything else.
+
+MID GAME (3:00-7:00):
+- After weap: build FIX immediately to unlock tanks!
+- Check BUILDABLE for available tanks (faction-dependent: 2tnk for Allied, 3tnk for Soviet).
+- Spam the best tank in your BUILDABLE list — best cost/power ratio.
+- Build second proc for double income if not done yet.
+- When you have 4-5 tanks: send them as a GROUP to attack.
+- NEVER trickle units one by one — always group at least 3-5 before attacking.
+- Priority targets: enemy harvesters (harv) → enemy proc → enemy weap → enemy fact
+- Killing a harvester = -$1400 to enemy AND cripples income.
+
+LATE GAME (7:00+):
+- Build tech center for advanced units (mammoth tanks, shock troopers, V2 rockets).
+- Consider second weap for double tank production.
+- Use combined arms: tanks in front, v2rl/arty behind for siege.
+- Protect your proc and harvesters — they are your lifeline.
+
+═══ TACTICAL RULES ═══
+1. NEVER send scouts with your main army. Scouts go separately to explore.
+2. ALWAYS group units before attacking. 5 tanks together > 5 tanks sent one at a time.
+3. If you see enemy units near your base, DEFEND FIRST before attacking.
+4. Attack the ECONOMY (harvesters, refineries), not the main army.
+5. If your attack fails and you lose units — DO NOT send another attack immediately. Rebuild first.
+6. Keep producing tanks non-stop. Idle weap = wasted money.
+7. If UNDER ATTACK: move ALL nearby combat units to intercept. Do not let them sit idle.
+8. Use map coordinates from your game state to make smart orders. Don't guess coordinates.
+
+═══ SCOUTING ═══
+You can only see what your units see (fog of war). Early scouting wins games.
+- Send e1 riflemen ($100 each) or dogs to the 4 corners/edges of the map to find enemy base.
+- Once you find the enemy, remember their base coordinates for future attacks.
+- If you haven't found the enemy, KEEP SCOUTING. You cannot attack what you cannot see.
+
+═══ COMMON MISTAKES TO AVOID ═══
+- ORDERING UNITS NOT IN BUILDABLE LIST (check BUILDABLE before every produce order!)
+- NOT BUILDING FIX (without fix, weap only makes harv/apc/ftrk — NO TANKS!)
+- IGNORING POWER (if surplus < 0 everything builds 3x slower — you WILL lose)
+- Building dome/tech before weap+fix (you need tanks FIRST)
+- Sending infantry to attack (they're too slow and weak — use tanks)
+- Not building second proc (one harvester can't sustain tank production)
+- Sending units without a target (don't guess — use coordinates from ENEMY section)
+- Building too many defenses instead of army (defenses can't attack enemy base)
+- Ignoring UNDER ATTACK warnings (your buildings die fast without defense)
+- Hoarding money (if money > $2000 and nothing building — you're losing)
+- Trying to build dogs from barracks (dogs need KENNEL building kenn, not barr/tent)
+- Building 2tnk as Soviet or 3tnk as Allied (check your FACTION! Each has different tanks)";
 		}
 
 		async Task<(AIDecision Decision, string RawResponse)> CallApiAsync(
@@ -1013,6 +1153,9 @@ STRATEGY:
 	{
 		public int GameTimeTicks;
 		public int Money;
+		public int PowerProvided;
+		public int PowerDrained;
+		public string Faction = "";
 		public readonly List<ActorSnapshot> Buildings = new();
 		public readonly List<ActorSnapshot> Units = new();
 		public readonly List<ActorSnapshot> VisibleEnemies = new();
