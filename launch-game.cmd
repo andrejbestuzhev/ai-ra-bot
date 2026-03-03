@@ -7,13 +7,18 @@ if exist user.config (FOR /F "tokens=1,2 delims==" %%A IN (user.config) DO (set 
 set TEMPLATE_LAUNCHER=%0
 set MOD_SEARCH_PATHS=%~dp0mods,./mods
 
+:: Strip quotes from parsed variables
+set MOD_ID=!MOD_ID:"=!
+set ENGINE_VERSION=!ENGINE_VERSION:"=!
+set ENGINE_DIRECTORY=!ENGINE_DIRECTORY:"=!
+
 if "!MOD_ID!" == "" goto badconfig
 if "!ENGINE_VERSION!" == "" goto badconfig
 if "!ENGINE_DIRECTORY!" == "" goto badconfig
 
 set TEMPLATE_DIR=%CD%
-if not exist %ENGINE_DIRECTORY%\bin\OpenRA.exe goto noengine
->nul find %ENGINE_VERSION% %ENGINE_DIRECTORY%\VERSION || goto noengine
+if not exist "!ENGINE_DIRECTORY!\bin\OpenRA.exe" goto noengine
+>nul find "!ENGINE_VERSION!" "!ENGINE_DIRECTORY!\VERSION" || goto noengine
 cd %ENGINE_DIRECTORY%
 
 bin\OpenRA.exe Game.Mod=%MOD_ID% Engine.EngineDir=".." Engine.LaunchPath="%TEMPLATE_LAUNCHER%" Engine.ModSearchPaths="%MOD_SEARCH_PATHS%"  "%*"

@@ -15,10 +15,12 @@ Player:
 	## AI strategist module — full control over building, production, movement
 	AIStrategistModule:
 		RequiresCondition: enable-ai-strategist
-		DecisionIntervalTicks: 375
-		ApiModel: claude-haiku-4-5-20251001
+		DecisionIntervalTicks: 125
+		ApiModel: arcee-ai/trinity-large-preview:free
 		MaxTokens: 1024
 		EnableApi: true
+		PromptFile: mods/aira/ai-strategist-prompt.txt
+		ReloadPrompt: false
 
 	## Harvesters drive themselves
 	HarvesterBotModule@ai:
